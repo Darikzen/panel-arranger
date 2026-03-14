@@ -1,0 +1,11 @@
+[Desktop Entry]
+Name=Panel Arranger
+Comment=Rearrange GNOME Shell top bar items between left, center, and right zones
+Exec=python3 /opt/panel-arranger/panel_arranger.py
+Icon=preferences-desktop-display
+Terminal=false
+Type=Application
+StartupWMClass=panel-arranger
+StartupNotify=true
+Categories=GNOME;GTK;Settings;
+Keywords=panel;topbar;arrange;layout;indicator;tray;
