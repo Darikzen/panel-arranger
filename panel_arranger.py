@@ -249,7 +249,9 @@ def scan_panel_items() -> list[PanelItem]:
                 if s.strip().strip("'\"")
             ]
 
-    for icon_info in get_appindicator_icons():
+    ai_icons = get_appindicator_icons()
+
+    for icon_info in ai_icons:
         icon_name = icon_info["name"]
         # Determine current position
         pos = tray_pos
@@ -266,6 +268,22 @@ def scan_panel_items() -> list[PanelItem]:
             file_path=str(ai_js) if ai_js else None,
             appindicator_match=icon_name.lower(),
         ))
+
+    # If the appindicator JS was patched but no icons appeared on D-Bus,
+    # add a placeholder so the file shows up in restore_backups() and in the UI.
+    if ai_js and not ai_icons:
+        js_text = ai_js.read_text()
+        if "// [panel-arranger] BEGIN" in js_text:
+            items.append(PanelItem(
+                name="AppIndicator (patched — icons not visible)",
+                item_id="appindicator:__patched__",
+                source="appindicator",
+                current_pos=tray_pos,
+                target_pos=tray_pos,
+                index=0,
+                file_path=str(ai_js),
+                appindicator_match="",
+            ))
 
     return items
 
@@ -351,21 +369,21 @@ def patch_appindicator_icons(items: list[PanelItem]) -> bool:
     center_icons = [i.appindicator_match for i in ai_items if i.target_pos == "center"]
     # right is the default for most setups, so we only need overrides for left/center
 
-    # Build the replacement addIconToPanel body
-    # We need to replace the Main.panel.addToStatusArea block in addIconToPanel
-    # Find the existing call
-    add_pattern = re.compile(
-        r"([ \t]*)(Main\.panel\.addToStatusArea\s*\(\s*indicatorId\s*,\s*statusIcon\s*[^;]*;)",
+    # Build the replacement addIconToPanel body.
+    # Check for our marker block FIRST — if it exists, replace the whole block.
+    # Checking for the raw addToStatusArea call second, because that call also
+    # appears inside an already-patched block and would cause double-patching.
+    patched_pattern = re.compile(
+        r"([ \t]*)(// \[panel-arranger\] BEGIN.*?// \[panel-arranger\] END)",
         re.DOTALL
     )
-    match = add_pattern.search(text)
+    match = patched_pattern.search(text)
     if not match:
-        # Maybe already patched — look for our marker
-        patched_pattern = re.compile(
-            r"([ \t]*)(// \[panel-arranger\] BEGIN.*?// \[panel-arranger\] END)",
+        add_pattern = re.compile(
+            r"([ \t]*)(Main\.panel\.addToStatusArea\s*\(\s*indicatorId\s*,\s*statusIcon\s*[^;]*;)",
             re.DOTALL
         )
-        match = patched_pattern.search(text)
+        match = add_pattern.search(text)
         if not match:
             print("  [!] Cannot find addToStatusArea call in appindicator extension")
             return False
@@ -608,7 +626,10 @@ class PanelArrangerWindow(Adw.ApplicationWindow):
         header.pack_end(apply_btn)
 
         # Restore button
-        restore_btn = Gtk.Button(icon_name="edit-undo-symbolic", tooltip_text="Restore backups")
+        restore_btn = Gtk.Button(
+            icon_name="edit-undo-symbolic",
+            tooltip_text="Restore backups (created automatically when you Apply changes)",
+        )
         restore_btn.connect("clicked", self._on_restore)
         header.pack_end(restore_btn)
 
@@ -774,23 +795,39 @@ class PanelArrangerApp(Adw.Application):
         restored = []
         failed = []
         seen_paths = set()
+
+        # Build the list of paths to check: all items + always the appindicator JS
+        paths_to_check: list[tuple[str, str]] = []  # (file_path, display_name)
         for item in self.items:
-            if not item.file_path or item.file_path in seen_paths:
-                continue
-            seen_paths.add(item.file_path)
-            bak = item.file_path + ".panel-arranger.bak"
-            if needs_sudo(item.file_path):
-                cmd = f"test -f {shlex.quote(bak)} && cp {shlex.quote(bak)} {shlex.quote(item.file_path)}"
+            if item.file_path and item.file_path not in seen_paths:
+                seen_paths.add(item.file_path)
+                paths_to_check.append((item.file_path, item.name))
+
+        ai_js = find_appindicator_extension()
+        if ai_js and str(ai_js) not in seen_paths:
+            seen_paths.add(str(ai_js))
+            paths_to_check.append((str(ai_js), "AppIndicator extension"))
+
+        for file_path, display_name in paths_to_check:
+            bak = file_path + ".panel-arranger.bak"
+            if needs_sudo(file_path):
+                # exit 2 = backup not found (skip), other non-zero = real failure
+                cmd = (
+                    f"if test -f {shlex.quote(bak)}; then "
+                    f"cp {shlex.quote(bak)} {shlex.quote(file_path)}; "
+                    f"else exit 2; fi"
+                )
                 r = run(["pkexec", "bash", "-c", cmd])
                 if r.returncode == 0:
-                    restored.append(item.name)
-                else:
-                    failed.append(item.name)
+                    restored.append(display_name)
+                elif r.returncode != 2:
+                    failed.append(display_name)
+                # exit 2 → no backup, silently skip
             else:
                 if not Path(bak).exists():
                     continue
-                shutil.copy2(bak, item.file_path)
-                restored.append(item.name)
+                shutil.copy2(bak, file_path)
+                restored.append(display_name)
 
         if restored:
             msg = "Restored backups for:\n" + "\n".join(f"  • {n}" for n in restored)
