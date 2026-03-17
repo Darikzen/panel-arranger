@@ -2,6 +2,8 @@
 
 A GTK4/libadwaita GUI tool for rearranging GNOME Shell top bar items between left, center, and right zones.
 
+![Screenshot placeholder](docs/screenshot.png)
+
 ## What it does
 
 - Discovers all panel indicators: both GNOME Shell extensions and AppIndicator tray icons (PSensor, update notifier, etc.)
